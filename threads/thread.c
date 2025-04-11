@@ -37,6 +37,9 @@ static struct thread *initial_thread;
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
 
+/* global lock for filesys operation */
+static struct lock file_lock;
+
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
   {
@@ -71,6 +74,18 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+void 
+acquire_global_file_lock ()
+{
+  lock_acquire(&file_lock);
+}
+
+void 
+release_global_file_lock ()
+{
+  lock_release(&file_lock);
+}
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -92,6 +107,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  lock_init (&file_lock);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -182,6 +198,16 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+
+#ifdef USERPROG
+  t->myself = malloc(sizeof(struct child));
+  t->myself->tid = tid;
+  t->myself->exit_status = t->exit_status;
+  t->myself->finish = false;
+  sema_init (&t->myself->sema, 0);
+  list_push_back (&thread_current()->child_list, &t->myself->child_elem);
+#endif
+
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -463,6 +489,16 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+  
+#ifdef USERPROG
+  list_init(&(t->file_list));
+  list_init(&(t->child_list));
+  if(t == initial_thread)
+    t->parent_tid = -1;
+  else 
+    t->parent_tid = thread_current()->tid;
+  t->exit_status = -1;
+#endif
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

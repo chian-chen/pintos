@@ -62,7 +62,44 @@ process_execute (const char *file_name)
 // lab01 Hint - This is the mainly function you have to trace.
 static void push_argument(void **esp, char *cmdline)
 {
+  // printf("current esp: %p\n", *esp);  // it should be 0xc0000000
+  char * token, *save_ptr;
+  int argv_size = 30, argc = 0;
+  char ** argv = malloc (argv_size * sizeof(char *));
 
+  for (token = strtok_r (cmdline, " ", &save_ptr); token!= NULL;
+      token = strtok_r (NULL, " ", &save_ptr))
+  {
+    *esp -= (strlen(token) + 1);
+    memcpy(*esp, token, strlen(token) + 1);  
+    argv[argc] = *esp;
+    argc++;
+  }
+
+  argv[argc] = 0;
+  *esp = (int)*esp & 0xfffffffc; // Align to 4 bytes
+
+  for (int i = argc; i >= 0; i--)
+  {
+    *esp -= sizeof(char*);
+    memcpy(*esp, &argv[i], sizeof(char **));
+  }
+  
+  //pushing argv
+  char **argv_on_stack = *esp;
+  *esp -= sizeof(char**);
+  memcpy(*esp, &argv_on_stack, sizeof(char **));
+  
+  // Pushing argc
+  *esp -= sizeof(int);
+  memcpy(*esp, &argc, sizeof(int));
+
+  // Pushing fake return address
+  *esp -= sizeof(void*);
+  memcpy(*esp, &argv[argc], sizeof(void *));
+
+  free(argv);
+  return;
 }
 
 /* A thread function that loads a user process and starts it
@@ -121,7 +158,45 @@ static void start_process (void *file_name_)
    int
    process_wait (tid_t child_tid UNUSED) 
    {
-     return -1;
+     if(child_tid == TID_ERROR)
+       return -1;
+    //  printf("process_wait: %d\n", child_tid);
+    //  printf("current thread_id: %d\n", thread_current()->tid);
+
+     struct thread *cur = thread_current();
+     struct list_elem *e = list_begin(&cur->child_list);
+     struct child *child_entry = NULL;
+     int return_status = 0;
+
+     while (e != list_end(&cur->child_list)) 
+      {
+        struct list_elem *next = list_next(e);
+        struct child *child_entry = list_entry(e, struct child, child_elem);
+        int return_status;
+
+        if(child_entry->tid == child_tid)
+        {
+          // printf("found child thread_id: %d\n", child_entry->tid);
+          if (!child_entry->finish){
+            child_entry->finish = true;
+            // printf("I'm waiting child thread_id: %d\n", child_entry->tid);
+            sema_down(&child_entry->sema);
+            return_status = child_entry->exit_status;
+            // printf("child thread_id: %d finished with status: %d\n", child_entry->tid, return_status);
+          }
+          else{
+            // printf("child thread_id: %d already finished before waiting\n", child_entry->tid);
+            return_status = child_entry->exit_status;
+          }
+          break;
+        }
+        e = next;
+      }
+      if (e == list_end (&cur->child_list)) 
+        return_status = -1;
+      
+      list_remove (e);
+      return return_status;
    }
 
 /* Free the current process's resources. */
@@ -131,6 +206,13 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
+  printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+  /* Notify the parent thread that this thread has finished. update the status */
+  /* Not close open files...... */
+  thread_current ()->myself->exit_status = thread_current()->exit_status;
+  thread_current ()->myself->finish = true;
+  sema_up (&thread_current()->myself->sema);
+  
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;

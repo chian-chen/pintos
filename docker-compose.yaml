@@ -3,11 +3,11 @@ version: '3.8'
 services:
   pintos:
     image: davidchen871/pintos
-    container_name: pintos
+    container_name: pintos_lab1
     stdin_open: true  
     tty: true         
     restart: no       
-    #volumes:
-    # - [your_source_code_path]:/home/pintos
+    volumes:
+    -  /home/os/lab1/pintos:/home/pintos
     environment:
       - PINTOS_DIR=/home/pintos
