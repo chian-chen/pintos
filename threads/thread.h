@@ -89,6 +89,7 @@ struct child
     struct list_elem child_elem;              /* List element for child list. */
     struct semaphore sema;              /* Semaphore for synchronization. */
     bool finish;
+    bool load_success;
   };
 
 struct file_descriptor
@@ -118,7 +119,9 @@ struct thread
     struct list file_list;
     struct child * myself;    /* I'm my parent's child */
     int exit_status;
-    tid_t parent_tid;
+    struct thread* parent; /* Parent thread */
+    struct semaphore wait_load_file;
+    bool load_file_success;
 #endif
 
     /* Owned by thread.c. */

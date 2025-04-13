@@ -17,6 +17,7 @@
 #include <filesys/filesys.h>
 
 #define MAX_SYSCALL 20
+struct lock file_lock;
 
 // lab01 Hint - Here are the system calls you need to implement.
 
@@ -38,6 +39,9 @@ void sys_seek(struct intr_frame* f);
 void sys_tell(struct intr_frame* f);
 void sys_close(struct intr_frame* f);
 
+static void error_exit(void);
+static int get_user(const uint8_t *uaddr);
+static void check_ptr_valid(const void *vaddr, uint8_t offset);
 
 static void (*syscalls[MAX_SYSCALL])(struct intr_frame *) = {
   [SYS_HALT] = sys_halt,
@@ -56,10 +60,26 @@ static void (*syscalls[MAX_SYSCALL])(struct intr_frame *) = {
 };
 
 static void syscall_handler (struct intr_frame *);
+static struct file* find_file_by_fd(int fd);
+
+static struct file* find_file_by_fd(int fd)
+{
+  struct thread *cur = thread_current();
+  struct list_elem *e;
+  for (e = list_begin (&cur->file_list); e != list_end (&cur->file_list); e = list_next (e))
+  {
+    struct file_descriptor *t_file = list_entry (e, struct file_descriptor, file_elem);
+    if (t_file->fd == fd)
+      return t_file->file;
+  }
+  return NULL;
+}
+
 
 void syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  lock_init(&file_lock);
 }
 
 
@@ -72,14 +92,9 @@ get_user (const uint8_t *uaddr)
 }
 
 /* general check if the ptr is valid or not */
-void *
+static void
 check_ptr_valid(const void *vaddr, uint8_t offset)
 {
-  if (!is_user_vaddr(vaddr))
-  {
-    error_exit();
-  }
-  void *ptr = pagedir_get_page (thread_current()->pagedir, vaddr);
   if(!is_user_vaddr(vaddr) || pagedir_get_page (thread_current()->pagedir, vaddr) == NULL)
   {
     error_exit();
@@ -92,7 +107,7 @@ check_ptr_valid(const void *vaddr, uint8_t offset)
       error_exit ();
     }
   }
-  return ptr;
+  return;
 }
 
 /* System Call: void halt (void)
@@ -104,20 +119,17 @@ void sys_halt(void)
   shutdown_power_off();
 }
 
-/* 系統呼叫: exit - 結束程序，並傳回 exit status */ 
+
 // 1
 void sys_exit(struct intr_frame *f) 
 {
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   user_ptr++;
-  // printf("Here the exit_status is: %d\n", *user_ptr);
-  /* record the exit status of the process */
   thread_current()->exit_status = *user_ptr;
   thread_exit ();
 }
 
-/* 系統呼叫: exec - 執行命令 (未實作) */
 // 2
 void sys_exec(struct intr_frame *f)
 {
@@ -129,7 +141,6 @@ void sys_exec(struct intr_frame *f)
   f->eax = process_execute((char*)*user_ptr);
 }
 
-/* 系統呼叫: wait - 等待程序結束 (未實作) */
 // 3
 void sys_wait(struct intr_frame *f)
 {
@@ -137,12 +148,11 @@ void sys_wait(struct intr_frame *f)
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   user_ptr++;
-  //lock_acquire(&file_lock);
-  f->eax = process_wait((char*)*user_ptr);
-  //lock_release(&file_lock);
+  lock_acquire(&file_lock);
+  f->eax = process_wait(*(int *)user_ptr);
+  lock_release(&file_lock);
 }
 
-/* 系統呼叫: create - 建立檔案 (未實作) */
 // 4
 void sys_create(struct intr_frame *f)
 {
@@ -151,10 +161,11 @@ void sys_create(struct intr_frame *f)
   check_ptr_valid(user_ptr + 1, 4);
   check_ptr_valid(*(user_ptr + 1), 4);
   user_ptr++;
+  lock_acquire(&file_lock);
   f->eax = filesys_create((char*)*user_ptr, *(user_ptr + 1));
+  lock_release(&file_lock);
 }
 
-/* 系統呼叫: remove - 刪除檔案 (未實作) */
 // 5
 void sys_remove(struct intr_frame *f)
 {
@@ -163,26 +174,43 @@ void sys_remove(struct intr_frame *f)
   check_ptr_valid(user_ptr + 1, 4);
   check_ptr_valid(*(user_ptr + 1), 4);
   user_ptr++;
-  f->eax = filesys_remove(*user_ptr);
+  lock_acquire(&file_lock);
+  f->eax = filesys_remove((char*)*user_ptr);
+  lock_release(&file_lock);
 }
 
-/* 系統呼叫: open - 開啟檔案 (未實作) */
 // 6
 void sys_open(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(user_ptr + 1, 4);
+  check_ptr_valid(*(user_ptr + 1), 4);
+  user_ptr++;
+  char *file_name = *(char **)(user_ptr);
+  lock_acquire(&file_lock);
+  struct file* curr_file = filesys_open(file_name);
+  lock_release(&file_lock);
+  // // open  fail, kill the process
+  if(curr_file == NULL){
+    error_exit();
+  }
+  struct thread * t = thread_current();
+  struct file_descriptor *thread_file_temp = malloc(sizeof(struct file_descriptor));
+  thread_file_temp->fd = 2;  // update later
+  thread_file_temp->file = curr_file;
+  list_push_back (&t->file_list, &thread_file_temp->file_elem);
+  f->eax = thread_file_temp->fd;
 }
 
-/* 系統呼叫: filesize - 取得檔案大小 (未實作) */
 void sys_filesize(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(user_ptr + 1, 4);
+  int fd = *(user_ptr + 1);
+  struct file *curr_file = find_file_by_fd(fd);
+  if(curr_file == NULL)
+    error_exit();
+  f->eax = file_length(curr_file);
 }
 
 /* 系統呼叫: read - 讀取檔案 (未實作) */
@@ -202,7 +230,7 @@ void sys_write(struct intr_frame *f)
   check_ptr_valid(user_ptr + 7, 4);
   check_ptr_valid(*(user_ptr + 6), 4);
 
-  *user_ptr++;
+  user_ptr++;
   int fd = *user_ptr;
   const char *buffer = (const char *)*(user_ptr + 1);
   unsigned size = *(user_ptr + 2);
@@ -220,31 +248,46 @@ void sys_write(struct intr_frame *f)
 /* 系統呼叫: seek - 變更檔案讀寫位置 (未實作) */
 void sys_seek(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(user_ptr + 1, 8);
+  user_ptr++;
+  int fd = *(int *)(user_ptr);
+  user_ptr++;
+  unsigned pos = *(unsigned *)(user_ptr);
+
+  struct file *curr_file = find_file_by_fd(fd);
+  if(f == NULL)
+    error_exit();
+  file_seek(curr_file, pos);
 }
 
 /* 系統呼叫: tell - 取得當前檔案讀寫位置 (未實作) */
 void sys_tell(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(user_ptr + 1, 4);
+  user_ptr++;
+  int fd = *(int *)(user_ptr);
+  struct file* curr_file = find_file_by_fd(fd);
+  if(curr_file == NULL)
+    error_exit();
+  f->eax = file_tell(f);
 }
 
 /* 系統呼叫: close - 關閉檔案 (未實作) */
 void sys_close(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(user_ptr + 1, 4);
+  user_ptr++;
+  int fd = *(int *)(user_ptr);
+  struct file* curr_file = find_file_by_fd(fd);
+  if(curr_file == NULL)
+    error_exit();
+  file_close (curr_file);
 }
 
-void error_exit(void)
+static void error_exit(void)
 {
   thread_current()->exit_status = -1;
   thread_exit();

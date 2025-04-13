@@ -22,11 +22,34 @@
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static void push_argument(void **esp, char *cmdline);
+static struct thread* get_child(tid_t tid);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
+struct thread*
+get_child(tid_t tid)
+{
+  struct thread *cur = thread_current();
+  struct list_elem *e = list_begin(&cur->child_list);
+  struct child *child_entry = NULL;
+
+  while (e != list_end(&cur->child_list)) 
+  {
+    struct list_elem *next = list_next(e);
+    struct child *child_entry = list_entry(e, struct child, child_elem);
+
+    if(child_entry->tid == tid)
+    {
+      return child_entry;
+    }
+    e = next;
+  }
+  return NULL;
+}
+
+
 tid_t
 process_execute (const char *file_name) 
 {
@@ -49,21 +72,19 @@ process_execute (const char *file_name)
   fn_copy = strtok_r(fn_copy, " ", &save_ptr);
 
   tid = thread_create(fn_copy, PRI_DEFAULT, start_process, fn_copy2);
-  free(fn_copy);
+  struct child *current_child = get_child(tid);
+  if (current_child == NULL)
+    tid = TID_ERROR;
+  
+  sema_down (&current_child->sema);
+  if (!current_child->load_success)
+    tid = TID_ERROR;
 
+  free(fn_copy);
   if (tid == TID_ERROR){
     free (fn_copy2); 
     return TID_ERROR;
   }
-  /*sema_down(&thread_current()->sema);
-  if (!thread_current()->success)
-  {
-      return TID_ERROR;
-  }
-  else
-  {
-      return tid;
-  }*/
 
   return tid;
 }
@@ -132,15 +153,20 @@ static void start_process (void *file_name_)
   char *save_ptr;
   file_name = strtok_r(file_name, " ", &save_ptr);
   success = load (file_name, &if_.eip, &if_.esp);
+  thread_current()->myself->load_success = success;
+
   if(success)
   {
     push_argument (&if_.esp, fn_copy);
   }else
   {
     /* If load failed, quit. */
+    sema_up(&thread_current()->myself->sema);
+    free(fn_copy);
     thread_exit ();
   }
 
+  sema_up(&thread_current()->myself->sema);
   free(fn_copy);
   
   /* Start the user process by simulating a return from an
@@ -194,7 +220,6 @@ static void start_process (void *file_name_)
             // printf("child thread_id: %d finished with status: %d\n", child_entry->tid, return_status);
           }
           else{
-            // printf("child thread_id: %d already finished before waiting\n", child_entry->tid);
             return_status = child_entry->exit_status;
           }
           break;
@@ -203,8 +228,8 @@ static void start_process (void *file_name_)
       }
       if (e == list_end (&cur->child_list)) 
         return_status = -1;
-      
-      list_remove (e);
+      else
+        list_remove (e);
       return return_status;
    }
 
@@ -218,9 +243,10 @@ process_exit (void)
   printf("%s: exit(%d)\n", cur->name, cur->exit_status);
   /* Notify the parent thread that this thread has finished. update the status */
   /* Not close open files...... */
-  thread_current ()->myself->exit_status = thread_current()->exit_status;
-  thread_current ()->myself->finish = true;
-  sema_up (&thread_current()->myself->sema);
+  
+  cur->myself->exit_status = cur->exit_status;
+  cur->myself->finish = true;
+  sema_up (&cur->myself->sema);
   
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

@@ -37,9 +37,6 @@ static struct thread *initial_thread;
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
 
-/* global lock for filesys operation */
-static struct lock file_lock;
-
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
   {
@@ -74,18 +71,6 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
-/*void
-acquire_global_file_lock ()
-{
-  lock_acquire(&file_lock);
-}*/
-
-/*void
-release_global_file_lock ()
-{
-  lock_release(&file_lock);
-}*/
-
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -107,7 +92,6 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-  lock_init (&file_lock);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -494,9 +478,9 @@ init_thread (struct thread *t, const char *name, int priority)
   list_init(&(t->file_list));
   list_init(&(t->child_list));
   if(t == initial_thread)
-    t->parent_tid = -1;
+    t->parent = NULL;
   else 
-    t->parent_tid = thread_current()->tid;
+    t->parent = thread_current();
   t->exit_status = -1;
 #endif
 
