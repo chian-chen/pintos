@@ -74,17 +74,17 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
-void 
+/*void
 acquire_global_file_lock ()
 {
   lock_acquire(&file_lock);
-}
+}*/
 
-void 
+/*void
 release_global_file_lock ()
 {
   lock_release(&file_lock);
-}
+}*/
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
