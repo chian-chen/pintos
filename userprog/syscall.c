@@ -98,17 +98,19 @@ check_ptr_valid(const void *vaddr, uint8_t offset)
 /* System Call: void halt (void)
     Terminates Pintos by calling shutdown_power_off() (declared in devices/shutdown.h). 
 */
-void sys_halt(void)
+// 0
+void sys_halt(void) 
 {
   shutdown_power_off();
 }
 
-/* 系統呼叫: exit - 結束程序，並傳回 exit status */
-void sys_exit(struct intr_frame *f)
+/* 系統呼叫: exit - 結束程序，並傳回 exit status */ 
+// 1
+void sys_exit(struct intr_frame *f) 
 {
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
-  *user_ptr++;
+  user_ptr++;
   // printf("Here the exit_status is: %d\n", *user_ptr);
   /* record the exit status of the process */
   thread_current()->exit_status = *user_ptr;
@@ -116,45 +118,56 @@ void sys_exit(struct intr_frame *f)
 }
 
 /* 系統呼叫: exec - 執行命令 (未實作) */
+// 2
 void sys_exec(struct intr_frame *f)
 {
   /* Not implemented. */
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   check_ptr_valid(*(user_ptr + 1), 4);
-  *user_ptr++;
-  f->eax = process_execute((char*)* user_ptr);
+  user_ptr++;
+  f->eax = process_execute((char*)*user_ptr);
 }
 
 /* 系統呼叫: wait - 等待程序結束 (未實作) */
+// 3
 void sys_wait(struct intr_frame *f)
 {
   /* Not implemented. */
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
-  *user_ptr++;
-  f->eax = process_wait(*user_ptr);
+  user_ptr++;
+  //lock_acquire(&file_lock);
+  f->eax = process_wait((char*)*user_ptr);
+  //lock_release(&file_lock);
 }
 
 /* 系統呼叫: create - 建立檔案 (未實作) */
+// 4
 void sys_create(struct intr_frame *f)
 {
   /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(user_ptr + 1, 4);
+  check_ptr_valid(*(user_ptr + 1), 4);
+  user_ptr++;
+  f->eax = filesys_create((char*)*user_ptr, *(user_ptr + 1));
 }
 
 /* 系統呼叫: remove - 刪除檔案 (未實作) */
+// 5
 void sys_remove(struct intr_frame *f)
 {
   /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(user_ptr + 1, 4);
+  check_ptr_valid(*(user_ptr + 1), 4);
+  user_ptr++;
+  f->eax = filesys_remove(*user_ptr);
 }
 
 /* 系統呼叫: open - 開啟檔案 (未實作) */
+// 6
 void sys_open(struct intr_frame *f)
 {
   /* Not implemented. */

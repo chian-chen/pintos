@@ -55,6 +55,15 @@ process_execute (const char *file_name)
     free (fn_copy2); 
     return TID_ERROR;
   }
+  /*sema_down(&thread_current()->sema);
+  if (!thread_current()->success)
+  {
+      return TID_ERROR;
+  }
+  else
+  {
+      return tid;
+  }*/
 
   return tid;
 }
