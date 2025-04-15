@@ -117,6 +117,8 @@ struct thread
     uint32_t *pagedir;                  /* Page directory. */
     struct list child_list;
     struct list file_list;
+    int fd;
+    struct file* exec_file; /* self */
     struct child * myself;    /* I'm my parent's child */
     int exit_status;
     struct thread* parent; /* Parent thread */

@@ -126,8 +126,18 @@ void sys_exit(struct intr_frame *f)
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   user_ptr++;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit ();
+  struct thread *cur = thread_current();
+  cur->exit_status = *user_ptr;
+  while (!list_empty(&cur->file_list))
+  {
+    struct list_elem *e = list_pop_front(&cur->file_list);
+    struct file_descriptor *f_desc = list_entry(e, struct file_descriptor, file_elem);
+    lock_acquire(&file_lock);
+    file_close(f_desc->file);
+    lock_release(&file_lock);
+    free(f_desc);
+  }
+  thread_exit();
 }
 
 // 2
@@ -148,9 +158,9 @@ void sys_wait(struct intr_frame *f)
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   user_ptr++;
-  lock_acquire(&file_lock);
-  f->eax = process_wait(*(int *)user_ptr);
-  lock_release(&file_lock);
+  int return_status = process_wait(*(int *)user_ptr);
+  // printf("sys_wait: %d\n", return_status);
+  f->eax = return_status;
 }
 
 // 4
@@ -192,11 +202,18 @@ void sys_open(struct intr_frame *f)
   lock_release(&file_lock);
   // // open  fail, kill the process
   if(curr_file == NULL){
-    error_exit();
+    f->eax = -1;
+    return;
   }
   struct thread * t = thread_current();
   struct file_descriptor *thread_file_temp = malloc(sizeof(struct file_descriptor));
-  thread_file_temp->fd = 2;  // update later
+  if(thread_file_temp == NULL){
+    file_close(curr_file);
+    f->eax = -1;
+    return;
+  }
+  thread_file_temp->fd = t->fd;
+  t->fd++;
   thread_file_temp->file = curr_file;
   list_push_back (&t->file_list, &thread_file_temp->file_elem);
   f->eax = thread_file_temp->fd;
@@ -213,36 +230,58 @@ void sys_filesize(struct intr_frame *f)
   f->eax = file_length(curr_file);
 }
 
-/* 系統呼叫: read - 讀取檔案 (未實作) */
 void sys_read(struct intr_frame *f)
 {
-  /* Not implemented. */
-  uint32_t *user_ptr = f->esp;
-  thread_current()->exit_status = *user_ptr;
-  thread_exit();
+  check_ptr_valid(f->esp, 4 * sizeof(uint32_t));
+
+  int fd = *((int *)f->esp + 1);
+  void *buffer = *((void **)f->esp + 2);
+  unsigned size = *((unsigned *)f->esp + 3);
+
+  check_ptr_valid(buffer, size);
+
+  if (fd == 0) {  // stdin
+    for (unsigned i = 0; i < size; i++) {
+      ((char *)buffer)[i] = input_getc();
+    }
+    f->eax = size;
+    return;
+  }
+
+  struct file *curr_file = find_file_by_fd(fd);
+  if (curr_file == NULL)
+    error_exit();
+
+  f->eax = file_read(curr_file, buffer, size);
 }
 
 /* 系統呼叫: write - 寫入資料
    若 fd == 1 (stdout) 則用 putbuf 印出，否則視為檔案寫入（未實作） */
 void sys_write(struct intr_frame *f)
 {
-  uint32_t *user_ptr = f->esp;
-  check_ptr_valid(user_ptr + 7, 4);
-  check_ptr_valid(*(user_ptr + 6), 4);
+  // 檢查整個堆疊區間
+  check_ptr_valid(f->esp, 4 * sizeof(uint32_t));
 
-  user_ptr++;
-  int fd = *user_ptr;
-  const char *buffer = (const char *)*(user_ptr + 1);
-  unsigned size = *(user_ptr + 2);
-  // printf("buffer: %s\n", buffer);
+  // 依照 syscall3 的約定，取出參數
+  int fd = *((int *)f->esp + 1);
+  const void *buffer = *((const void **)f->esp + 2);
+  unsigned size = *((unsigned *)f->esp + 3);
 
-  if (fd == 1) {
+  // 檢查 buffer 是否為合法使用者記憶體區間，並可安全讀取 size 個 byte
+  check_ptr_valid(buffer, size);
+
+  if (fd == 1) {  // stdout
     putbuf(buffer, size);
     f->eax = size;
-  } else {
-    /* Not implemented for file writing */
-    f->eax = -1;
+    return;
   }
+
+  struct file *curr_file = find_file_by_fd(fd);
+  
+  if (curr_file == NULL)
+    error_exit();
+
+  f->eax = file_write(curr_file, buffer, size);
 }
 
 /* 系統呼叫: seek - 變更檔案讀寫位置 (未實作) */
@@ -256,7 +295,7 @@ void sys_seek(struct intr_frame *f)
   unsigned pos = *(unsigned *)(user_ptr);
 
   struct file *curr_file = find_file_by_fd(fd);
-  if(f == NULL)
+  if(curr_file == NULL)
     error_exit();
   file_seek(curr_file, pos);
 }
@@ -271,20 +310,32 @@ void sys_tell(struct intr_frame *f)
   struct file* curr_file = find_file_by_fd(fd);
   if(curr_file == NULL)
     error_exit();
-  f->eax = file_tell(f);
+  f->eax = file_tell(curr_file);
 }
 
-/* 系統呼叫: close - 關閉檔案 (未實作) */
 void sys_close(struct intr_frame *f)
 {
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   user_ptr++;
   int fd = *(int *)(user_ptr);
-  struct file* curr_file = find_file_by_fd(fd);
-  if(curr_file == NULL)
-    error_exit();
-  file_close (curr_file);
+
+  struct thread *cur = thread_current();
+  struct list_elem *e = list_begin(&cur->file_list);
+  while (e != list_end(&cur->file_list))
+  {
+    struct file_descriptor *f_desc = list_entry(e, struct file_descriptor, file_elem);
+    if (f_desc->fd == fd)
+    {
+      list_remove(e);
+      file_close(f_desc->file);
+      free(f_desc);
+      return;
+    }
+    e = list_next(e);
+  }
+
+  error_exit();
 }
 
 static void error_exit(void)

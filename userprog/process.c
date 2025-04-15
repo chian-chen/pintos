@@ -19,6 +19,9 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 
+
+extern struct lock file_lock;  // syscall.c
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static void push_argument(void **esp, char *cmdline);
@@ -154,6 +157,7 @@ static void start_process (void *file_name_)
   file_name = strtok_r(file_name, " ", &save_ptr);
   success = load (file_name, &if_.eip, &if_.esp);
   thread_current()->myself->load_success = success;
+  free(file_name_);
 
   if(success)
   {
@@ -206,8 +210,7 @@ static void start_process (void *file_name_)
      while (e != list_end(&cur->child_list)) 
       {
         struct list_elem *next = list_next(e);
-        struct child *child_entry = list_entry(e, struct child, child_elem);
-        int return_status;
+        child_entry = list_entry(e, struct child, child_elem);
 
         if(child_entry->tid == child_tid)
         {
@@ -220,7 +223,9 @@ static void start_process (void *file_name_)
             // printf("child thread_id: %d finished with status: %d\n", child_entry->tid, return_status);
           }
           else{
+            // printf("child thread_id: %d finished with status: %d\n", child_entry->tid, child_entry->exit_status);
             return_status = child_entry->exit_status;
+            // printf("update return status success? %d\n", return_status);
           }
           break;
         }
@@ -228,8 +233,10 @@ static void start_process (void *file_name_)
       }
       if (e == list_end (&cur->child_list)) 
         return_status = -1;
-      else
+      else{
         list_remove (e);
+        free(child_entry);
+      }
       return return_status;
    }
 
@@ -246,6 +253,33 @@ process_exit (void)
   
   cur->myself->exit_status = cur->exit_status;
   cur->myself->finish = true;
+  if(cur->exec_file != NULL){
+    file_allow_write(cur->exec_file);
+    lock_acquire(&file_lock);
+    file_close(cur->exec_file);
+    lock_release(&file_lock);
+  }
+  /* ---------- check file resource is free ---------- */
+  while(!list_empty(&cur->file_list)) {
+    struct list_elem *e = list_pop_front(&cur->file_list);
+    struct file_descriptor *f_desc = list_entry(e, struct file_descriptor, file_elem);
+    lock_acquire(&file_lock);
+    file_close(f_desc->file);
+    lock_release(&file_lock);
+    free(f_desc);
+  }
+  /* ---------- check child resource is free ---------- */
+  if (!list_empty(&cur->child_list)) {
+    size_t remaining = list_size(&cur->child_list);
+    // printf("Warning: %s still has %zu unreleased child resource(s).\n",
+    //        cur->name, remaining);
+    while (!list_empty(&cur->child_list)) {
+      struct list_elem *e = list_pop_front(&cur->child_list);
+      struct child *child_entry = list_entry(e, struct child, child_elem);
+      free(child_entry);
+    }
+  }
+  /* -------------------------------------------------- */
   sema_up (&cur->myself->sema);
   
   /* Destroy the current process's page directory and switch back
@@ -281,7 +315,7 @@ process_activate (void)
      interrupts. */
   tss_update ();
 }
-
+
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
 
@@ -371,14 +405,16 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   process_activate ();
 
+  lock_acquire(&file_lock);
   /* Open executable file. */
   file = filesys_open (file_name);
-  if (file == NULL) 
+  if (file == NULL)
     {
       printf ("load: %s: open failed\n", file_name);
-      goto done; 
+      goto done;
     }
 
+  
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -463,7 +499,14 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  
+  if (!success)
+    file_close(file);
+  else{
+    t->exec_file = file;
+    file_deny_write(file);
+  }
+  lock_release(&file_lock);
   return success;
 }
 

@@ -482,6 +482,7 @@ init_thread (struct thread *t, const char *name, int priority)
   else 
     t->parent = thread_current();
   t->exit_status = -1;
+  t->fd = 2;
 #endif
 
   old_level = intr_disable ();
