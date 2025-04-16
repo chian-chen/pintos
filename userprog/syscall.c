@@ -20,7 +20,6 @@
 struct lock file_lock;
 
 // lab01 Hint - Here are the system calls you need to implement.
-
 /* System call for process. */
 
 void sys_halt(void);
@@ -39,9 +38,10 @@ void sys_seek(struct intr_frame* f);
 void sys_tell(struct intr_frame* f);
 void sys_close(struct intr_frame* f);
 
-static void error_exit(void);
+
 static int get_user(const uint8_t *uaddr);
 static void check_ptr_valid(const void *vaddr, uint8_t offset);
+
 
 static void (*syscalls[MAX_SYSCALL])(struct intr_frame *) = {
   [SYS_HALT] = sys_halt,
@@ -75,23 +75,25 @@ static struct file* find_file_by_fd(int fd)
   return NULL;
 }
 
-
 void syscall_init (void) 
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
   lock_init(&file_lock);
 }
 
-
 static int 
-get_user (const uint8_t *uaddr)
+get_user (const uint8_t *addr)
 {
+  if(!is_user_vaddr(addr) || pagedir_get_page (thread_current()->pagedir, addr) == NULL)
+  {
+    return -1;
+  }
   int result;
-  asm ("movl $1f, %0; movzbl %1, %0; 1:" : "=&a" (result) : "m" (*uaddr));
+  asm ("movl $1f, %0; movzbl %1, %0; 1:" : "=&a" (result) : "m" (*addr));
   return result;
 }
 
-/* general check if the ptr is valid or not */
+/* general check if the ptr is valid or not, offset depend on "syscall 0-3 in syscall.c" */
 static void
 check_ptr_valid(const void *vaddr, uint8_t offset)
 {
@@ -106,6 +108,23 @@ check_ptr_valid(const void *vaddr, uint8_t offset)
     {
       error_exit ();
     }
+  }
+  return;
+}
+
+static void 
+check_string_valid(const char *str)
+{
+  if (!is_user_vaddr(str) || pagedir_get_page(thread_current()->pagedir, str) == NULL) {
+    error_exit();
+  }
+  for (; ; str++) {
+    int ch = get_user((const uint8_t *)str);
+    if (ch == -1)
+      error_exit();
+
+    if (ch == '\0')
+      break;
   }
   return;
 }
@@ -128,22 +147,12 @@ void sys_exit(struct intr_frame *f)
   user_ptr++;
   struct thread *cur = thread_current();
   cur->exit_status = *user_ptr;
-  while (!list_empty(&cur->file_list))
-  {
-    struct list_elem *e = list_pop_front(&cur->file_list);
-    struct file_descriptor *f_desc = list_entry(e, struct file_descriptor, file_elem);
-    lock_acquire(&file_lock);
-    file_close(f_desc->file);
-    lock_release(&file_lock);
-    free(f_desc);
-  }
   thread_exit();
 }
 
 // 2
 void sys_exec(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   check_ptr_valid(*(user_ptr + 1), 4);
@@ -154,22 +163,19 @@ void sys_exec(struct intr_frame *f)
 // 3
 void sys_wait(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
   user_ptr++;
   int return_status = process_wait(*(int *)user_ptr);
-  // printf("sys_wait: %d\n", return_status);
   f->eax = return_status;
 }
 
 // 4
 void sys_create(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
-  check_ptr_valid(user_ptr + 1, 4);
-  check_ptr_valid(*(user_ptr + 1), 4);
+  check_ptr_valid(user_ptr + 1, 8);
+  check_string_valid(*(user_ptr + 1));
   user_ptr++;
   lock_acquire(&file_lock);
   f->eax = filesys_create((char*)*user_ptr, *(user_ptr + 1));
@@ -179,10 +185,9 @@ void sys_create(struct intr_frame *f)
 // 5
 void sys_remove(struct intr_frame *f)
 {
-  /* Not implemented. */
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
-  check_ptr_valid(*(user_ptr + 1), 4);
+  check_string_valid(*(user_ptr + 1));
   user_ptr++;
   lock_acquire(&file_lock);
   f->eax = filesys_remove((char*)*user_ptr);
@@ -194,29 +199,24 @@ void sys_open(struct intr_frame *f)
 {
   uint32_t *user_ptr = f->esp;
   check_ptr_valid(user_ptr + 1, 4);
-  check_ptr_valid(*(user_ptr + 1), 4);
+  check_string_valid(*(user_ptr + 1));
   user_ptr++;
   char *file_name = *(char **)(user_ptr);
   lock_acquire(&file_lock);
   struct file* curr_file = filesys_open(file_name);
   lock_release(&file_lock);
-  // // open  fail, kill the process
   if(curr_file == NULL){
     f->eax = -1;
-    return;
   }
-  struct thread * t = thread_current();
-  struct file_descriptor *thread_file_temp = malloc(sizeof(struct file_descriptor));
-  if(thread_file_temp == NULL){
-    file_close(curr_file);
-    f->eax = -1;
-    return;
+  else{
+    struct thread * t = thread_current();
+    struct file_descriptor *thread_file_temp = malloc(sizeof(struct file_descriptor));
+    thread_file_temp->fd = t->fd;
+    t->fd++;
+    thread_file_temp->file = curr_file;
+    list_push_back (&t->file_list, &thread_file_temp->file_elem);
+    f->eax = thread_file_temp->fd;
   }
-  thread_file_temp->fd = t->fd;
-  t->fd++;
-  thread_file_temp->file = curr_file;
-  list_push_back (&t->file_list, &thread_file_temp->file_elem);
-  f->eax = thread_file_temp->fd;
 }
 
 void sys_filesize(struct intr_frame *f)
@@ -225,22 +225,24 @@ void sys_filesize(struct intr_frame *f)
   check_ptr_valid(user_ptr + 1, 4);
   int fd = *(user_ptr + 1);
   struct file *curr_file = find_file_by_fd(fd);
-  if(curr_file == NULL)
-    error_exit();
-  f->eax = file_length(curr_file);
+  if(curr_file == NULL){
+    f->eax = -1;
+  }{
+    lock_acquire(&file_lock);
+    f->eax = file_length(curr_file);
+    lock_release(&file_lock);
+  }
 }
 
 void sys_read(struct intr_frame *f)
 {
-  check_ptr_valid(f->esp, 4 * sizeof(uint32_t));
-
-  int fd = *((int *)f->esp + 1);
-  void *buffer = *((void **)f->esp + 2);
-  unsigned size = *((unsigned *)f->esp + 3);
-
+  uint32_t *user_ptr = f->esp;
+  check_ptr_valid(user_ptr + 1, 12);
+  int fd = *((int *)user_ptr + 1);
+  void *buffer = *((void **)user_ptr + 2);
+  unsigned size = *((unsigned *)user_ptr + 3);
   check_ptr_valid(buffer, size);
-
-  if (fd == 0) {  // stdin
+  if (fd == 0) {
     for (unsigned i = 0; i < size; i++) {
       ((char *)buffer)[i] = input_getc();
     }
@@ -249,42 +251,41 @@ void sys_read(struct intr_frame *f)
   }
 
   struct file *curr_file = find_file_by_fd(fd);
-  if (curr_file == NULL)
-    error_exit();
-
+  if (curr_file == NULL){
+    f->eax = -1;
+    return;
+  }
+  lock_acquire(&file_lock);
   f->eax = file_read(curr_file, buffer, size);
+  lock_release(&file_lock);
 }
 
-/* 系統呼叫: write - 寫入資料
-   若 fd == 1 (stdout) 則用 putbuf 印出，否則視為檔案寫入（未實作） */
 void sys_write(struct intr_frame *f)
 {
-  // 檢查整個堆疊區間
-  check_ptr_valid(f->esp, 4 * sizeof(uint32_t));
+  uint32_t *user_ptr = f->esp;
+  check_ptr_valid(user_ptr + 1, 12);
+  int fd = *((int *)user_ptr + 1);
+  const void *buffer = *((const void **)user_ptr + 2);
+  unsigned size = *((unsigned *)user_ptr + 3);
 
-  // 依照 syscall3 的約定，取出參數
-  int fd = *((int *)f->esp + 1);
-  const void *buffer = *((const void **)f->esp + 2);
-  unsigned size = *((unsigned *)f->esp + 3);
-
-  // 檢查 buffer 是否為合法使用者記憶體區間，並可安全讀取 size 個 byte
   check_ptr_valid(buffer, size);
 
-  if (fd == 1) {  // stdout
+  if (fd == 1) {
     putbuf(buffer, size);
     f->eax = size;
     return;
   }
 
   struct file *curr_file = find_file_by_fd(fd);
-  
-  if (curr_file == NULL)
-    error_exit();
-
+  if (curr_file == NULL){
+    f->eax = 0;
+    return;
+  }
+  lock_acquire(&file_lock);
   f->eax = file_write(curr_file, buffer, size);
+  lock_release(&file_lock);
 }
 
-/* 系統呼叫: seek - 變更檔案讀寫位置 (未實作) */
 void sys_seek(struct intr_frame *f)
 {
   uint32_t *user_ptr = f->esp;
@@ -296,11 +297,12 @@ void sys_seek(struct intr_frame *f)
 
   struct file *curr_file = find_file_by_fd(fd);
   if(curr_file == NULL)
-    error_exit();
+    return;
+  lock_acquire(&file_lock);
   file_seek(curr_file, pos);
+  lock_release(&file_lock);
 }
 
-/* 系統呼叫: tell - 取得當前檔案讀寫位置 (未實作) */
 void sys_tell(struct intr_frame *f)
 {
   uint32_t *user_ptr = f->esp;
@@ -310,7 +312,9 @@ void sys_tell(struct intr_frame *f)
   struct file* curr_file = find_file_by_fd(fd);
   if(curr_file == NULL)
     error_exit();
+  lock_acquire(&file_lock);
   f->eax = file_tell(curr_file);
+  lock_release(&file_lock);
 }
 
 void sys_close(struct intr_frame *f)
@@ -327,18 +331,18 @@ void sys_close(struct intr_frame *f)
     struct file_descriptor *f_desc = list_entry(e, struct file_descriptor, file_elem);
     if (f_desc->fd == fd)
     {
-      list_remove(e);
+      lock_acquire(&file_lock);
       file_close(f_desc->file);
+      lock_release(&file_lock);
+      list_remove(e);
       free(f_desc);
       return;
     }
     e = list_next(e);
   }
-
-  error_exit();
 }
 
-static void error_exit(void)
+void error_exit(void)
 {
   thread_current()->exit_status = -1;
   thread_exit();
@@ -346,15 +350,12 @@ static void error_exit(void)
 
 static void syscall_handler (struct intr_frame *f UNUSED) 
 {
-  // printf ("system call!\n");
   uint32_t *user_ptr = f->esp;
-  check_ptr_valid (user_ptr + 1, 4);
+  check_ptr_valid (user_ptr, 4);
   
   int type = * (int *)f->esp;
-  // printf("syscall number: %d\n", type);
 
   if(type <= 0 || type >= MAX_SYSCALL){
-    // printf("Invalid syscall number: %d\n", type);
     error_exit();
   }
   syscalls[type](f);

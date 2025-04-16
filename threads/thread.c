@@ -189,9 +189,9 @@ thread_create (const char *name, int priority,
   t->myself->exit_status = t->exit_status;
   t->myself->finish = false;
   sema_init (&t->myself->sema, 0);
+  sema_init (&t->myself->load_sema, 0);
   list_push_back (&thread_current()->child_list, &t->myself->child_elem);
 #endif
-
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);

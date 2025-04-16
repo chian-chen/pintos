@@ -20,18 +20,18 @@
 #include "threads/malloc.h"
 
 
-extern struct lock file_lock;  // syscall.c
+extern struct lock file_lock;
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 static void push_argument(void **esp, char *cmdline);
-static struct thread* get_child(tid_t tid);
+static struct child* get_child(tid_t tid);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
-struct thread*
+struct child*
 get_child(tid_t tid)
 {
   struct thread *cur = thread_current();
@@ -51,7 +51,6 @@ get_child(tid_t tid)
   }
   return NULL;
 }
-
 
 tid_t
 process_execute (const char *file_name) 
@@ -76,19 +75,19 @@ process_execute (const char *file_name)
 
   tid = thread_create(fn_copy, PRI_DEFAULT, start_process, fn_copy2);
   struct child *current_child = get_child(tid);
+
   if (current_child == NULL)
     tid = TID_ERROR;
   
-  sema_down (&current_child->sema);
+  // sema_down (&current_child->sema);
+  sema_down(&current_child->load_sema);
   if (!current_child->load_success)
     tid = TID_ERROR;
 
-  free(fn_copy);
-  if (tid == TID_ERROR){
+  if (tid == TID_ERROR)
     free (fn_copy2); 
-    return TID_ERROR;
-  }
 
+  free(fn_copy);
   return tid;
 }
 
@@ -152,25 +151,24 @@ static void start_process (void *file_name_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
 
-
   char *save_ptr;
   file_name = strtok_r(file_name, " ", &save_ptr);
   success = load (file_name, &if_.eip, &if_.esp);
+
   thread_current()->myself->load_success = success;
   free(file_name_);
 
   if(success)
   {
+    sema_up(&thread_current()->myself->load_sema);
     push_argument (&if_.esp, fn_copy);
   }else
   {
-    /* If load failed, quit. */
-    sema_up(&thread_current()->myself->sema);
+    sema_up(&thread_current()->myself->load_sema);
     free(fn_copy);
     thread_exit ();
   }
 
-  sema_up(&thread_current()->myself->sema);
   free(fn_copy);
   
   /* Start the user process by simulating a return from an
@@ -201,7 +199,6 @@ static void start_process (void *file_name_)
        return -1;
     //  printf("process_wait: %d\n", child_tid);
     //  printf("current thread_id: %d\n", thread_current()->tid);
-
      struct thread *cur = thread_current();
      struct list_elem *e = list_begin(&cur->child_list);
      struct child *child_entry = NULL;
@@ -216,9 +213,9 @@ static void start_process (void *file_name_)
         {
           // printf("found child thread_id: %d\n", child_entry->tid);
           if (!child_entry->finish){
-            child_entry->finish = true;
             // printf("I'm waiting child thread_id: %d\n", child_entry->tid);
             sema_down(&child_entry->sema);
+            child_entry->finish = true;
             return_status = child_entry->exit_status;
             // printf("child thread_id: %d finished with status: %d\n", child_entry->tid, return_status);
           }
@@ -235,7 +232,7 @@ static void start_process (void *file_name_)
         return_status = -1;
       else{
         list_remove (e);
-        free(child_entry);
+        // free(child_entry);
       }
       return return_status;
    }
@@ -248,14 +245,20 @@ process_exit (void)
   uint32_t *pd;
 
   printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+  // printf("===================== current exiting thread_id: %d\n", cur->tid);
   /* Notify the parent thread that this thread has finished. update the status */
   /* Not close open files...... */
+
+  if (lock_held_by_current_thread(&file_lock))
+    lock_release(&file_lock);
   
   cur->myself->exit_status = cur->exit_status;
   cur->myself->finish = true;
+  sema_up (&cur->myself->sema);
+
   if(cur->exec_file != NULL){
-    file_allow_write(cur->exec_file);
     lock_acquire(&file_lock);
+    file_allow_write(cur->exec_file);
     file_close(cur->exec_file);
     lock_release(&file_lock);
   }
@@ -269,18 +272,18 @@ process_exit (void)
     free(f_desc);
   }
   /* ---------- check child resource is free ---------- */
-  if (!list_empty(&cur->child_list)) {
-    size_t remaining = list_size(&cur->child_list);
-    // printf("Warning: %s still has %zu unreleased child resource(s).\n",
-    //        cur->name, remaining);
-    while (!list_empty(&cur->child_list)) {
-      struct list_elem *e = list_pop_front(&cur->child_list);
-      struct child *child_entry = list_entry(e, struct child, child_elem);
-      free(child_entry);
-    }
-  }
+  // if (!list_empty(&cur->child_list)) {
+  //   size_t remaining = list_size(&cur->child_list);
+  //   // printf("Warning: %s still has %zu unreleased child resource(s).\n",
+  //   //        cur->name, remaining);
+  //   while (!list_empty(&cur->child_list)) {
+  //     struct list_elem *e = list_pop_front(&cur->child_list);
+  //     struct child *child_entry = list_entry(e, struct child, child_elem);
+  //     free(child_entry);
+  //   }
+  // }
   /* -------------------------------------------------- */
-  sema_up (&cur->myself->sema);
+  
   
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -500,9 +503,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
  done:
   /* We arrive here whether the load is successful or not. */
   
-  if (!success)
-    file_close(file);
-  else{
+  if (success){
     t->exec_file = file;
     file_deny_write(file);
   }

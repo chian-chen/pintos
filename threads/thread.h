@@ -86,10 +86,11 @@ struct child
   {
     tid_t tid;                          /* Child thread identifier. */
     int exit_status;                    /* Exit status of the child thread. */
-    struct list_elem child_elem;              /* List element for child list. */
+    struct list_elem child_elem;        /* List element for child list. */
     struct semaphore sema;              /* Semaphore for synchronization. */
-    bool finish;
-    bool load_success;
+    bool finish;                        /* after process_exit, it should be true */
+    struct semaphore load_sema;         /* Semaphore for load synchronization. */
+    bool load_success;                  /* process_execute create new thread, check if the file exist*/
   };
 
 struct file_descriptor
@@ -113,17 +114,14 @@ struct thread
     struct list_elem elem;              /* List element. */
 
 #ifdef USERPROG
-    /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    struct list child_list;
-    struct list file_list;
-    int fd;
-    struct file* exec_file; /* self */
-    struct child * myself;    /* I'm my parent's child */
-    int exit_status;
-    struct thread* parent; /* Parent thread */
-    struct semaphore wait_load_file;
-    bool load_file_success;
+    struct list child_list;             /* List of child threads, in struct child */
+    struct list file_list;              /* stored all files related to, struct file_descriptor */
+    int fd;                             /* File descriptor, initial to 0 */
+    struct file* exec_file;             /* in start_process load() */
+    struct child * myself;              /* I'm my parent's child, in my parent's child_list */
+    int exit_status;                    /* return status */
+    struct thread* parent;              /* Parent thread */
 #endif
 
     /* Owned by thread.c. */
